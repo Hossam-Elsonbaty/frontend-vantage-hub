@@ -57,17 +57,24 @@ userInput.addEventListener('keydown', (e) => {
 });
 
 // Add message to chat UI
-function addMessage(content, role) {
+function addMessage(content, role, isImage = false) {
   const messageDiv = document.createElement('div');
   messageDiv.className = `message ${role}`;
   
   const avatar = role === 'user' ? '👤' : '🤖';
   const avatarBg = role === 'user' ? '#5436da' : '#19c37d';
   
+  let contentHtml;
+  if (isImage) {
+    contentHtml = `<img src="${content}" alt="Generated image" class="generated-image" />`;
+  } else {
+    contentHtml = `<p>${escapeHtml(content)}</p>`;
+  }
+  
   messageDiv.innerHTML = `
     <div class="message-avatar" style="background: ${avatarBg}">${avatar}</div>
     <div class="message-content">
-      <p>${escapeHtml(content)}</p>
+      ${contentHtml}
     </div>
   `;
   
@@ -114,6 +121,36 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+// Generate image using DALL-E API
+async function generateImage(prompt) {
+  try {
+    const response = await fetch('https://api.openai.com/v1/images/generations', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: 'dall-e-3',
+        prompt: prompt,
+        n: 1,
+        size: '1024x1024'
+      })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error?.message || 'Image generation failed');
+    }
+
+    const data = await response.json();
+    return data.data[0].url;
+  } catch (error) {
+    console.error('Error:', error);
+    throw error;
+  }
+}
+
 // Send message to OpenAI API
 async function sendMessage(userMessage) {
   // Add user message to history
@@ -158,6 +195,16 @@ async function sendMessage(userMessage) {
   }
 }
 
+// Check if message is an image generation request
+function isImageRequest(message) {
+  return message.toLowerCase().startsWith('/image ');
+}
+
+// Extract image prompt from message
+function getImagePrompt(message) {
+  return message.slice(7).trim();
+}
+
 // Handle form submission
 chatForm.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -182,12 +229,31 @@ chatForm.addEventListener('submit', async (e) => {
   addTypingIndicator();
 
   try {
-    // Get AI response
-    const response = await sendMessage(message);
-    
-    // Remove typing and add response
-    removeTypingIndicator();
-    addMessage(response, 'assistant');
+    // Check if it's an image generation request
+    if (isImageRequest(message)) {
+      const prompt = getImagePrompt(message);
+      const imageUrl = await generateImage(prompt);
+      
+      removeTypingIndicator();
+      addMessage(imageUrl, 'assistant', true);
+      
+      // Add to conversation history as text reference
+      conversationHistory.push({
+        role: 'user',
+        content: `Generate an image: ${prompt}`
+      });
+      conversationHistory.push({
+        role: 'assistant',
+        content: `I generated an image based on: "${prompt}"`
+      });
+    } else {
+      // Get AI response
+      const response = await sendMessage(message);
+      
+      // Remove typing and add response
+      removeTypingIndicator();
+      addMessage(response, 'assistant');
+    }
   } catch (error) {
     removeTypingIndicator();
     
@@ -198,8 +264,10 @@ chatForm.addEventListener('submit', async (e) => {
     chatMessages.appendChild(errorDiv);
     scrollToBottom();
 
-    // Remove failed message from history
-    conversationHistory.pop();
+    // Remove failed message from history if not image request
+    if (!isImageRequest(message)) {
+      conversationHistory.pop();
+    }
   } finally {
     sendBtn.disabled = false;
     userInput.focus();
